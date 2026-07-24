@@ -1,6 +1,6 @@
 {
   "name": "@dangminhdev04032005/query-resource",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Transport-agnostic, capability-driven resource factory for TanStack Query v5.",
   "keywords": [
     "tanstack-query",
