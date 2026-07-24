@@ -1,0 +1,901 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..fb7a2ff
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,22 @@
++name: Verify package
++
++on:
++  pull_request:
++  push:
++    branches: [master]
++
++permissions:
++  contents: read
++
++jobs:
++  verify:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-node@v4
++        with:
++          node-version: 20
++          cache: npm
++      - run: npm ci
++      - run: npm test
++      - run: npm run pack:check
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..62ccde4
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,4 @@
++node_modules/
++dist/
++*.tsbuildinfo
++.DS_Store
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..070bd67
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 query-resource contributors
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..6105fa7
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,308 @@
++# @dangminhdev/query-resource
++
++Typed, transport-agnostic resource factory for TanStack Query v5.
++
++It standardizes query keys, query options, infinite queries, mutations,
++optimistic cache updates, rollback, invalidation, prefetch, and SSR cache
++warming. It does **not** call an HTTP API itself: `fetch`, Axios, GraphQL, DTO
++mapping, and domain rules remain in your project.
++
++## Install
++
++```bash
++pnpm add @dangminhdev/query-resource @tanstack/react-query
++# or: npm install @dangminhdev/query-resource @tanstack/react-query
++```
++
++The package requires TanStack Query v5 and expects your application to already
++provide a `QueryClientProvider`.
++
++## The boundary
++
++```text
++HTTP client -> repository -> resource -> feature hook -> component
++```
++
++| Layer | Owns |
++| --- | --- |
++| Repository | HTTP endpoint, DTO validation/mapping, pagination normalization |
++| Resource | Query keys, query/infinite options, mutations, cache operations |
++| Feature hook | Permission, feature flag, filters, UI feedback and navigation |
++| Component | Renders data and calls commands from its hook |
++
++Do not put `fetch` or Axios directly in a resource. A resource consumes a
++repository function returning normalized domain data, so the same resource
++pattern works with any transport.
++
++## A full CRUD module
++
++### 1. Write the repository
++
++```ts
++// products.repository.ts
++export type Product = { id: string; name: string; price: number };
++export type ProductPage = { items: Product[]; nextCursor?: string };
++
++export const productRepository = {
++  async list(
++    input: { q: string; cursor?: string },
++    signal?: AbortSignal,
++  ): Promise<ProductPage> {
++    const params = new URLSearchParams({ q: input.q });
++    if (input.cursor) params.set("cursor", input.cursor);
++
++    const response = await fetch(`/api/products?${params}`, { signal });
++    if (!response.ok) throw new Error("Could not load products");
++    return response.json() as Promise<ProductPage>;
++  },
++
++  async detail(id: string, signal?: AbortSignal): Promise<Product> {
++    const response = await fetch(`/api/products/${id}`, { signal });
++    if (!response.ok) throw new Error("Could not load product");
++    return response.json() as Promise<Product>;
++  },
++
++  async create(input: { name: string; price: number }): Promise<Product> {
++    const response = await fetch("/api/products", {
++      method: "POST",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(input),
++    });
++    if (!response.ok) throw new Error("Could not create product");
++    return response.json() as Promise<Product>;
++  },
++
++  async update(input: {
++    id: string;
++    patch: Partial<Pick<Product, "name" | "price">>;
++  }): Promise<Product> {
++    const response = await fetch(`/api/products/${input.id}`, {
++      method: "PATCH",
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify(input.patch),
++    });
++    if (!response.ok) throw new Error("Could not update product");
++    return response.json() as Promise<Product>;
++  },
++
++  async remove(id: string): Promise<void> {
++    const response = await fetch(`/api/products/${id}`, { method: "DELETE" });
++    if (!response.ok) throw new Error("Could not delete product");
++  },
++};
++```
++
++For Axios, only the repository changes:
++
++```ts
++const page = await axios.get<ProductPage>("/api/products", {
++  params: input,
++  signal,
++});
++return page.data;
++```
++
++### 2. Declare capabilities in the resource
++
++```ts
++// products.resource.ts
++import {
++  createResource,
++  defineInfiniteQuery,
++  defineMutation,
++  defineQuery,
++} from "@dangminhdev/query-resource";
++import { productRepository } from "./products.repository";
++
++type Scope = { organizationId: string };
++
++export const productResource = createResource<Scope>()({
++  namespace: ["my-app"],
++  name: "products",
++  scopeKey: (scope) => ["organization", scope.organizationId],
++  queries: {
++    detail: defineQuery({
++      inputKey: (input: { id: string }) => [input.id],
++      queryFn: ({ input, signal }) =>
++        productRepository.detail(input.id, signal),
++    }),
++  },
++  infiniteQueries: {
++    list: defineInfiniteQuery({
++      inputKey: (input: { q: string }) => [input],
++      initialPageParam: undefined as string | undefined,
++      queryFn: ({ input, pageParam, signal }) =>
++        productRepository.list({ ...input, cursor: pageParam }, signal),
++      getNextPageParam: (page) => page.nextCursor,
++    }),
++  },
++  mutations: {
++    create: defineMutation({
++      mutationFn: ({ variables }) => productRepository.create(variables),
++      invalidates: [{ type: "infinite", operation: "list" }],
++    }),
++    update: defineMutation({
++      mutationFn: ({ variables }) => productRepository.update(variables),
++      invalidates: [
++        { type: "query", operation: "detail" },
++        { type: "infinite", operation: "list" },
++      ],
++    }),
++    remove: defineMutation({
++      mutationFn: ({ variables }: { variables: { id: string } }) =>
++        productRepository.remove(variables.id),
++      invalidates: [
++        { type: "query", operation: "detail" },
++        { type: "infinite", operation: "list" },
++      ],
++    }),
++  },
++});
++```
++
++The names are domain commands, not a fixed CRUD vocabulary. `approve`,
++`cancel`, `checkIn`, and `markRead` are valid mutation names.
++
++### 3. Consume it from a feature hook
++
++```tsx
++import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
++import { productResource } from "./products.resource";
++
++export function useProducts(organizationId: string, q: string) {
++  const client = useQueryClient();
++  const products = productResource.bind({ organizationId });
++
++  const list = useInfiniteQuery(products.infiniteQueries.list.options({ q }));
++  const create = useMutation(
++    products.mutations.create.options({
++      optimistic: ({ client, cache, variables }) =>
++        cache.infiniteQueries.list.patchAll(client, (current) => ({
++          ...current,
++          pages: current.pages.map((page, index) =>
++            index === 0
++              ? {
++                  ...page,
++                  items: [
++                    { id: `optimistic-${Date.now()}`, ...variables },
++                    ...page.items,
++                  ],
++                }
++              : page,
++          ),
++        })),
++      onSuccess: ({ data, client, cache }) => {
++        cache.queries.detail.set(client, { id: data.id }, data);
++      },
++    }),
++  );
++
++  return { list, create, client };
++}
++```
++
++`optimistic` may return a rollback returned by `patch` or `patchAll`. On a
++mutation error, the resource runs that rollback automatically. If the cache was
++updated again in the meantime, it invalidates instead of overwriting newer data.
++
++## Partial modules are first-class
++
++Do not invent empty CRUD methods. The inferred API exposes only what is
++declared.
++
++### Read-only
++
++```ts
++const countryResource = createResource<void>()({
++  namespace: ["my-app"],
++  name: "countries",
++  scopeKey: () => ["public"],
++  queries: {
++    all: defineQuery({
++      inputKey: (_input: undefined) => [],
++      queryFn: ({ signal }) => countryRepository.list(signal),
++    }),
++  },
++});
++
++countryResource.bind(undefined).queries.all.options(undefined);
++// No `mutations.create` exists here.
++```
++
++### Create-only
++
++```ts
++const importResource = createResource<{ tenantId: string }>()({
++  namespace: ["my-app"],
++  name: "imports",
++  scopeKey: (scope) => ["tenant", scope.tenantId],
++  mutations: {
++    upload: defineMutation({
++      mutationFn: ({ scope, variables }: {
++        scope: { tenantId: string };
++        variables: FormData;
++      }) => importRepository.upload(scope.tenantId, variables),
++    }),
++  },
++});
++```
++
++## Cache and server helpers
++
++After `bind(scope)`, normal and infinite queries provide:
++
++```ts
++const products = productResource.bind({ organizationId: "org-1" });
++
++products.infiniteQueries.list.prefetch(client, { q: "chair" });
++products.queries.detail.ensure(client, { id: "p-1" });
++products.queries.detail.invalidate(client, { id: "p-1" });
++products.queries.detail.invalidateAll(client);
++products.queries.detail.set(client, { id: "p-1" }, product);
++products.queries.detail.patch(client, { id: "p-1" }, (current) =>
++  current ? { ...current, name: "Renamed" } : current,
++);
++```
++
++This is suitable for route prefetching and SSR because these helpers receive an
++explicit `QueryClient`; the package never creates a global client.
++
++## Key rules
++
++Generated keys follow this shape:
++
++```text
++[namespace, scopeKey(scope), resourceName, capability, operation, inputKey(input)]
++```
++
++- Put every response-affecting value in `scopeKey` or `inputKey`.
++- Keep keys JSON-serializable and inputs immutable after creating options.
++- Use `defineQuery` for a normal page/offset query and `defineInfiniteQuery`
++  for cursor or bidirectional pagination.
++- `invalidates` can target only operations declared in the same resource. Use a
++  feature hook to coordinate effects across resources.
++
++## Development and publishing
++
++```bash
++npm install
++npm test
++npm run pack:check
++```
++
++Publish a public scoped package after creating an npm account and enabling 2FA:
++
++```bash
++npm login
++npm whoami
++npm publish
++```
++
++`publishConfig.access` is already set to `public`. Before every release, change
++the version with `npm version patch`, `npm version minor`, or `npm version major`.
++The `prepublishOnly` script runs tests and checks the tarball contents before
++npm uploads it.
++
++## License
++
++[MIT](LICENSE)
+diff --git a/package-lock.json b/package-lock.json
+new file mode 100644
+index 0000000..5f86850
+--- /dev/null
++++ b/package-lock.json
+@@ -0,0 +1,112 @@
++{
++  "name": "@dangminhdev/query-resource",
++  "version": "0.1.0",
++  "lockfileVersion": 3,
++  "requires": true,
++  "packages": {
++    "": {
++      "name": "@dangminhdev/query-resource",
++      "version": "0.1.0",
++      "license": "MIT",
++      "devDependencies": {
++        "@tanstack/react-query": "^5.101.0",
++        "@types/node": "^20.0.0",
++        "@types/react": "^19.0.0",
++        "typescript": "^5.9.0"
++      },
++      "engines": {
++        "node": ">=20"
++      },
++      "peerDependencies": {
++        "@tanstack/react-query": "^5.0.0"
++      }
++    },
++    "node_modules/@tanstack/query-core": {
++      "version": "5.101.4",
++      "resolved": "https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.101.4.tgz",
++      "integrity": "sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/tannerlinsley"
++      }
++    },
++    "node_modules/@tanstack/react-query": {
++      "version": "5.101.4",
++      "resolved": "https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.101.4.tgz",
++      "integrity": "sha512-yRg2pfOCxIs4ZJW3XYYHU/WgtD04FHSnfHlpRT7h7pR77hwkdRG4wxbKe4aq6P0RvXUTBSQpQeadS1SUYUe+KA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@tanstack/query-core": "5.101.4"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/tannerlinsley"
++      },
++      "peerDependencies": {
++        "react": "^18 || ^19"
++      }
++    },
++    "node_modules/@types/node": {
++      "version": "20.19.43",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.43.tgz",
++      "integrity": "sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "undici-types": "~6.21.0"
++      }
++    },
++    "node_modules/@types/react": {
++      "version": "19.2.17",
++      "resolved": "https://registry.npmjs.org/@types/react/-/react-19.2.17.tgz",
++      "integrity": "sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "csstype": "^3.2.2"
++      }
++    },
++    "node_modules/csstype": {
++      "version": "3.2.3",
++      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
++      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
++      "dev": true,
++      "license": "MIT"
++    },
++    "node_modules/react": {
++      "version": "19.2.8",
++      "resolved": "https://registry.npmjs.org/react/-/react-19.2.8.tgz",
++      "integrity": "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==",
++      "dev": true,
++      "license": "MIT",
++      "peer": true,
++      "engines": {
++        "node": ">=0.10.0"
++      }
++    },
++    "node_modules/typescript": {
++      "version": "5.9.3",
++      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
++      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
++      "dev": true,
++      "license": "Apache-2.0",
++      "bin": {
++        "tsc": "bin/tsc",
++        "tsserver": "bin/tsserver"
++      },
++      "engines": {
++        "node": ">=14.17"
++      }
++    },
++    "node_modules/undici-types": {
++      "version": "6.21.0",
++      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
++      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
++      "dev": true,
++      "license": "MIT"
++    }
++  }
++}
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..a891b2c
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,61 @@
++{
++  "name": "@dangminhdev/query-resource",
++  "version": "0.1.0",
++  "description": "Transport-agnostic, capability-driven resource factory for TanStack Query v5.",
++  "keywords": [
++    "tanstack-query",
++    "react-query",
++    "resource",
++    "cache",
++    "typescript"
++  ],
++  "license": "MIT",
++  "type": "module",
++  "sideEffects": false,
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "files": [
++    "dist",
++    "README.md",
++    "LICENSE"
++  ],
++  "exports": {
++    ".": {
++      "types": "./dist/index.d.ts",
++      "import": "./dist/index.js"
++    }
++  },
++  "repository": {
++    "type": "git",
++    "url": "git+https://github.com/dangminhdev0403/query-resource.git"
++  },
++  "bugs": {
++    "url": "https://github.com/dangminhdev0403/query-resource/issues"
++  },
++  "homepage": "https://github.com/dangminhdev0403/query-resource#readme",
++  "publishConfig": {
++    "access": "public"
++  },
++  "engines": {
++    "node": ">=20"
++  },
++  "scripts": {
++    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-esm-imports.mjs",
++    "typecheck": "tsc -p tsconfig.type-tests.json --noEmit",
++    "test:runtime": "node --test tests/*.test.mjs",
++    "test:consumer": "tsc -p tsconfig.consumer.json --noEmit",
++    "test": "npm run build && npm run typecheck && npm run test:runtime && npm run test:consumer",
++    "pack:check": "npm run build && npm pack --dry-run --ignore-scripts",
++    "prepack": "npm run build",
++    "prepublishOnly": "npm test && npm run pack:check"
++  },
++  "peerDependencies": {
++    "@tanstack/react-query": "^5.0.0"
++  },
++  "devDependencies": {
++    "@tanstack/react-query": "^5.101.0",
++    "@types/node": "^20.0.0",
++    "@types/react": "^19.0.0",
++    "typescript": "^5.9.0"
++  }
++}
+diff --git a/scripts/rewrite-esm-imports.mjs b/scripts/rewrite-esm-imports.mjs
+new file mode 100644
+index 0000000..495bf6d
+--- /dev/null
++++ b/scripts/rewrite-esm-imports.mjs
+@@ -0,0 +1,40 @@
++import { readdir, readFile, writeFile } from "node:fs/promises";
++import { extname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++
++const distDirectory = fileURLToPath(new URL("../dist", import.meta.url));
++const relativeSpecifierPattern =
++  /(\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)(["'])(\.{1,2}\/[^"'?#]+)\2/g;
++
++async function listModuleFiles(directory) {
++  const entries = await readdir(directory, { withFileTypes: true });
++  const nestedFiles = await Promise.all(
++    entries.map((entry) => {
++      const path = join(directory, entry.name);
++      return entry.isDirectory() ? listModuleFiles(path) : [path];
++    }),
++  );
++
++  return nestedFiles
++    .flat()
++    .filter((path) => extname(path) === ".js" || path.endsWith(".d.ts"));
++}
++
++function hasFileExtension(specifier) {
++  return extname(specifier) !== "";
++}
++
++for (const path of await listModuleFiles(distDirectory)) {
++  const source = await readFile(path, "utf8");
++  const rewritten = source.replace(
++    relativeSpecifierPattern,
++    (match, prefix, quote, specifier) =>
++      hasFileExtension(specifier)
++        ? match
++        : `${prefix}${quote}${specifier}.js${quote}`,
++  );
++
++  if (rewritten !== source) {
++    await writeFile(path, rewritten);
++  }
++}
+diff --git a/create-resource.ts b/src/create-resource.ts
+similarity index 100%
+rename from create-resource.ts
+rename to src/create-resource.ts
+diff --git a/definitions.ts b/src/definitions.ts
+similarity index 100%
+rename from definitions.ts
+rename to src/definitions.ts
+diff --git a/index.ts b/src/index.ts
+similarity index 100%
+rename from index.ts
+rename to src/index.ts
+diff --git a/rollback.ts b/src/rollback.ts
+similarity index 100%
+rename from rollback.ts
+rename to src/rollback.ts
+diff --git a/types.ts b/src/types.ts
+similarity index 100%
+rename from types.ts
+rename to src/types.ts
+diff --git a/tests/node-next-consumer.ts b/tests/node-next-consumer.ts
+new file mode 100644
+index 0000000..fa94caf
+--- /dev/null
++++ b/tests/node-next-consumer.ts
+@@ -0,0 +1,30 @@
++import {
++  createResource,
++  defineQuery,
++  type ResourceQueryContext,
++} from "@dangminhdev/query-resource";
++
++type Scope = {
++  tenantId: string;
++};
++
++const resource = createResource<Scope>()({
++  namespace: ["consumer-test"],
++  name: "items",
++  scopeKey: (scope) => [scope.tenantId],
++  queries: {
++    detail: defineQuery({
++      inputKey: (input: { id: string }) => [input.id],
++      queryFn: async ({
++        input,
++      }: ResourceQueryContext<
++        Scope,
++        { id: string }
++      >): Promise<{ id: string }> => ({ id: input.id }),
++    }),
++  },
++});
++
++resource.bind({ tenantId: "tenant-1" }).queries.detail.options({
++  id: "item-1",
++});
+diff --git a/tests/resource.test.mjs b/tests/resource.test.mjs
+new file mode 100644
+index 0000000..5ec1d71
+--- /dev/null
++++ b/tests/resource.test.mjs
+@@ -0,0 +1,161 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import { QueryClient } from "@tanstack/react-query";
++
++import {
++  createResource,
++  defineInfiniteQuery,
++  defineMutation,
++  defineQuery,
++} from "../dist/index.js";
++
++function createTestResource(log = []) {
++  return createResource()({
++    namespace: ["test-app"],
++    name: "items",
++    scopeKey: (scope) => ["tenant", scope.tenantId],
++    queries: {
++      list: defineQuery({
++        inputKey: (input) => [{ page: input.page, q: input.q }],
++        queryFn: async ({ scope, input, signal }) => {
++          log.push({ scope, input, signal });
++          return {
++            items: [{ id: `${scope.tenantId}-${input.page}`, name: input.q }],
++          };
++        },
++      }),
++    },
++    infiniteQueries: {
++      history: defineInfiniteQuery({
++        inputKey: (input) => [input.itemId],
++        initialPageParam: undefined,
++        getNextPageParam: (lastPage) => lastPage.nextCursor,
++        queryFn: async ({ input, pageParam }) => ({
++          items: [{ id: input.itemId, cursor: pageParam ?? "first" }],
++          nextCursor: pageParam ? undefined : "next",
++        }),
++      }),
++    },
++    mutations: {
++      create: defineMutation({
++        mutationFn: async ({ variables }) => ({
++          id: "created",
++          name: variables.name,
++        }),
++        invalidates: [{ type: "query", operation: "list" }],
++      }),
++    },
++  });
++}
++
++test("builds deterministic scoped keys and forwards query context", async () => {
++  const calls = [];
++  const resource = createTestResource(calls);
++  const bound = resource.bind({ tenantId: "tenant-1" });
++  const input = { page: 2, q: "room" };
++
++  assert.deepEqual(bound.key, ["test-app", "tenant", "tenant-1", "items"]);
++  assert.deepEqual(bound.queries.list.key(input), [
++    "test-app", "tenant", "tenant-1", "items", "query", "list",
++    { page: 2, q: "room" },
++  ]);
++
++  const controller = new AbortController();
++  const options = bound.queries.list.options(input);
++  const data = await options.queryFn({
++    queryKey: options.queryKey,
++    signal: controller.signal,
++  });
++
++  assert.deepEqual(data.items, [{ id: "tenant-1-2", name: "room" }]);
++  assert.equal(calls.length, 1);
++  assert.equal(calls[0].signal, controller.signal);
++});
++
++test("ensure reuses cached data and returns the query result", async () => {
++  const calls = [];
++  const client = new QueryClient({
++    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
++  });
++  const list = createTestResource(calls).bind({ tenantId: "t1" }).queries.list;
++  const input = { page: 1, q: "" };
++
++  const first = await list.ensure(client, input);
++  const second = await list.ensure(client, input);
++
++  assert.deepEqual(first, second);
++  assert.equal(calls.length, 1);
++});
++
++test("patch rollback preserves a newer cache write", async () => {
++  const client = new QueryClient();
++  const list = createTestResource().bind({ tenantId: "t1" }).queries.list;
++  const input = { page: 1, q: "" };
++
++  list.set(client, input, { items: [{ id: "1", name: "before" }] });
++  const rollback = list.patch(client, input, (current) => ({
++    items: [...current.items, { id: "2", name: "optimistic" }],
++  }));
++
++  await rollback();
++  assert.deepEqual(list.get(client, input), {
++    items: [{ id: "1", name: "before" }],
++  });
++
++  const staleRollback = list.patch(client, input, () => ({
++    items: [{ id: "1", name: "first optimistic write" }],
++  }));
++  list.patch(client, input, () => ({
++    items: [{ id: "1", name: "newer write" }],
++  }));
++
++  await staleRollback();
++  assert.equal(list.get(client, input).items[0].name, "newer write");
++  assert.equal(client.getQueryState(list.key(input)).isInvalidated, true);
++});
++
++test("mutation lifecycle rolls back and invalidates local queries", async () => {
++  const client = new QueryClient();
++  const bound = createTestResource().bind({ tenantId: "t1" });
++  const input = { page: 1, q: "" };
++  const list = bound.queries.list;
++  list.set(client, input, { items: [{ id: "1", name: "before" }] });
++
++  const options = bound.mutations.create.options({
++    optimistic: ({ client: currentClient, cache, variables }) =>
++      cache.queries.list.patchAll(currentClient, (current) => ({
++        items: [...current.items, { id: "temp", name: variables.name }],
++      })),
++  });
++  const context = {
++    client,
++    meta: options.meta,
++    mutationKey: options.mutationKey,
++  };
++
++  const rollback = await options.onMutate({ name: "draft" }, context);
++  assert.equal(list.get(client, input).items.length, 2);
++
++  await options.onError(new Error("failed"), { name: "draft" }, rollback, context);
++  assert.equal(list.get(client, input).items.length, 1);
++
++  await options.onSuccess(
++    { id: "2", name: "saved" },
++    { name: "saved" },
++    undefined,
++    context,
++  );
++  assert.equal(client.getQueryState(list.key(input)).isInvalidated, true);
++});
++
++test("infinite queries use a separate key family", () => {
++  const history = createTestResource().bind({ tenantId: "t1" })
++    .infiniteQueries.history;
++  const options = history.options({ itemId: "item-1" });
++
++  assert.deepEqual(history.prefix, [
++    "test-app", "tenant", "t1", "items", "infinite", "history",
++  ]);
++  assert.deepEqual(options.queryKey, [...history.prefix, "item-1"]);
++});
+diff --git a/tests/type-contract.test.ts b/tests/type-contract.test.ts
+index ac46a0b..c1fa247 100644
+--- a/tests/type-contract.test.ts
++++ b/tests/type-contract.test.ts
+@@ -8,7 +8,7 @@ import {
+   type ResourceInfiniteQueryContext,
+   type ResourceMutationContext,
+   type ResourceQueryContext,
+-} from "../index";
++} from "../src/index";
+ 
+ type Scope = {
+   tenantId: string;
+diff --git a/tsconfig.build.json b/tsconfig.build.json
+new file mode 100644
+index 0000000..98d037e
+--- /dev/null
++++ b/tsconfig.build.json
+@@ -0,0 +1,17 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "lib": ["ES2022", "DOM"],
++    "module": "ESNext",
++    "moduleResolution": "Bundler",
++    "strict": true,
++    "declaration": true,
++    "declarationMap": true,
++    "sourceMap": true,
++    "rootDir": "src",
++    "outDir": "dist",
++    "skipLibCheck": true,
++    "verbatimModuleSyntax": true
++  },
++  "include": ["src/**/*.ts"]
++}
+diff --git a/tsconfig.consumer.json b/tsconfig.consumer.json
+new file mode 100644
+index 0000000..783419b
+--- /dev/null
++++ b/tsconfig.consumer.json
+@@ -0,0 +1,12 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "lib": ["ES2022", "DOM"],
++    "module": "NodeNext",
++    "moduleResolution": "NodeNext",
++    "strict": true,
++    "noEmit": true,
++    "skipLibCheck": false
++  },
++  "include": ["tests/node-next-consumer.ts"]
++}
+diff --git a/tsconfig.type-tests.json b/tsconfig.type-tests.json
+new file mode 100644
+index 0000000..8923a7c
+--- /dev/null
++++ b/tsconfig.type-tests.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "./tsconfig.build.json",
++  "compilerOptions": {
++    "noEmit": true,
++    "rootDir": "."
++  },
++  "include": ["src/**/*.ts", "tests/type-contract.test.ts"]
++}

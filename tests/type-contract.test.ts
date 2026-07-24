@@ -8,7 +8,7 @@ import {
   type ResourceInfiniteQueryContext,
   type ResourceMutationContext,
   type ResourceQueryContext,
-} from "../index";
+} from "../src/index";
 
 type Scope = {
   tenantId: string;

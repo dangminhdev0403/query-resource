@@ -1,0 +1,61 @@
+{
+  "name": "@dangminhdev/query-resource",
+  "version": "0.1.0",
+  "description": "Transport-agnostic, capability-driven resource factory for TanStack Query v5.",
+  "keywords": [
+    "tanstack-query",
+    "react-query",
+    "resource",
+    "cache",
+    "typescript"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dangminhdev0403/query-resource.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dangminhdev0403/query-resource/issues"
+  },
+  "homepage": "https://github.com/dangminhdev0403/query-resource#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-esm-imports.mjs",
+    "typecheck": "tsc -p tsconfig.type-tests.json --noEmit",
+    "test:runtime": "node --test tests/*.test.mjs",
+    "test:consumer": "tsc -p tsconfig.consumer.json --noEmit",
+    "test": "npm run build && npm run typecheck && npm run test:runtime && npm run test:consumer",
+    "pack:check": "npm run build && npm pack --dry-run --ignore-scripts",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test && npm run pack:check"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.101.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}
